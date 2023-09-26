@@ -5,7 +5,6 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"path"
@@ -49,9 +48,12 @@ type Location struct {
 }
 
 type YummySettings struct {
-	Client *http.Client
-	URL    *string
+	Client     *http.Client
+	URL        *string
+	MaxXmlSize *int64
 }
+
+const DefaultMaxXmlSize = int64(512 * 1024 * 1024) // 512 MB
 
 type YumRepository interface {
 	Configure(settings YummySettings)
@@ -71,6 +73,10 @@ type Repository struct {
 func NewRepository(settings YummySettings) (Repository, error) {
 	if settings.Client == nil {
 		settings.Client = http.DefaultClient
+	}
+	if settings.MaxXmlSize == nil {
+		size := DefaultMaxXmlSize
+		settings.MaxXmlSize = &size
 	}
 	if settings.URL == nil {
 		return Repository{}, fmt.Errorf("url cannot be nil")
@@ -165,7 +171,7 @@ func (r *Repository) Packages() ([]Package, int, error) {
 		return nil, resp.StatusCode, fmt.Errorf("Cannot fetch %v: %d", primaryURL, resp.StatusCode)
 	}
 
-	if packages, err = ParseCompressedXMLData(resp.Body); err != nil {
+	if packages, err = ParseCompressedXMLData(resp.Body, *r.settings.MaxXmlSize); err != nil {
 		return nil, resp.StatusCode, err
 	}
 	r.packages = packages
@@ -275,14 +281,17 @@ func ParseRepomdXML(body io.ReadCloser) (Repomd, error) {
 
 // Unzips a gzipped body response, then parses the contained XML for package information
 // Returns an array of package data
-func ParseCompressedXMLData(body io.ReadCloser) ([]Package, error) {
+func ParseCompressedXMLData(body io.ReadCloser, maxSize int64) ([]Package, error) {
 	reader, err := gzip.NewReader(body)
+	// Limit the data going into the parser to limt the XML size, not the compressed size
+	limitedReader := io.LimitReader(reader, maxSize)
 
 	if err != nil {
 		return []Package{}, fmt.Errorf("Error unzipping response body: %w", err)
 	}
 
-	decoder := xml.NewDecoder(reader)
+	decoder := xml.NewDecoder(limitedReader)
+
 	reader.Close()
 
 	result := []Package{}
@@ -297,7 +306,7 @@ func ParseCompressedXMLData(body io.ReadCloser) ([]Package, error) {
 		} else if decodeError != nil {
 			return []Package{}, fmt.Errorf("Error decoding token: %w", decodeError)
 		} else if t == nil {
-			break
+			return result, decodeError
 		}
 
 		// Here, we inspect the token
@@ -308,8 +317,7 @@ func ParseCompressedXMLData(body io.ReadCloser) ([]Package, error) {
 			case "package":
 				var pkg Package
 				if decodeElementError := decoder.DecodeElement(&pkg, &elType); decodeElementError != nil {
-					log.Fatalf("Error decoding pkg: %s", decodeElementError)
-					break
+					return result, decodeElementError
 				}
 				// Ensure that the type is "rpm" before pushing our array
 				if pkg.Type != "rpm" {

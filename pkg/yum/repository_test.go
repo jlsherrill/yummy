@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"encoding/xml"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -190,14 +189,10 @@ func TestFetchRepomdSignature(t *testing.T) {
 // Check that the parser can decompress a gzip file and read the correct number of packages
 func TestParseCompressedXMLData(t *testing.T) {
 	xmlFile, err := os.Open("mocks/primary.xml.gz")
-	if err != nil {
-		log.Fatal(err)
-	}
+	assert.NoError(t, err)
 	defer xmlFile.Close()
-	result, err := ParseCompressedXMLData(xmlFile)
-	if err != nil {
-		t.Errorf("Error in test: %v", err)
-	}
+	result, err := ParseCompressedXMLData(xmlFile, DefaultMaxXmlSize)
+	assert.NoError(t, err)
 	if len(result) != 2 {
 		t.Errorf("Error - Expected to return 2 packages but received: %v", len(result))
 	}
@@ -210,6 +205,26 @@ func TestParseCompressedXMLData(t *testing.T) {
 	if result[0].Checksum.Value == "" {
 		t.Errorf("Did not properly parse checksum")
 	}
+}
+
+// if the xml is half complete, you get a parse error
+func TestParseCompressedXMLDataWithError(t *testing.T) {
+	xmlFile, err := os.Open("mocks/primary.xml.gz")
+	assert.NoError(t, err)
+	defer xmlFile.Close()
+	result, err := ParseCompressedXMLData(xmlFile, 200)
+	assert.Error(t, err)
+	assert.Empty(t, result)
+}
+
+// If no elements are parsed, no error is thrown, but you get empty results
+func TestParseCompressedXMLDataMaxLimit(t *testing.T) {
+	xmlFile, err := os.Open("mocks/aaaa.xml.gz")
+	assert.NoError(t, err)
+	defer xmlFile.Close()
+	result, err := ParseCompressedXMLData(xmlFile, 1)
+	assert.NoError(t, err)
+	assert.Empty(t, result)
 }
 
 func server() *httptest.Server {
